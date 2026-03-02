@@ -1,0 +1,114 @@
+name: "MCP Server Evals"
+description: "Run LLM-as-judge evaluations against any MCP server. Supports stdio and remote servers via OpenRouter."
+branding:
+  icon: "check-circle"
+  color: "green"
+
+inputs:
+  server_config:
+    description: >
+      MCP server config as JSON. Passed directly to MCPClient.
+      For stdio: {"command": "python", "args": ["-m", "my_server", "--transport", "stdio"], "env": {"KEY": "val"}}
+      For remote: {"url": "https://my-server.example.com/mcp"}
+    required: true
+  eval_cases:
+    description: "Path to eval_cases.yaml file"
+    required: true
+  openrouter_api_key:
+    description: "OpenRouter API key (for agent LLM + judge)"
+    required: true
+  filter:
+    description: "Filter cases by id substring"
+    required: false
+    default: ""
+  max_steps:
+    description: "Max agent steps per eval case"
+    required: false
+    default: "30"
+
+outputs:
+  results_json:
+    description: "Path to the eval results JSON file"
+    value: ${{ steps.evals.outputs.results_json }}
+  report_md:
+    description: "Path to the markdown report file"
+    value: ${{ steps.report.outputs.report_md }}
+  passed:
+    description: "Whether all evals passed (true/false)"
+    value: ${{ steps.evals.outputs.passed }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+
+    - name: Install dependencies
+      shell: bash
+      run: uv pip install --system mcp_use langchain-core langchain-openai deepeval pyyaml python-dotenv
+
+    - name: Validate OpenRouter API key
+      shell: bash
+      env:
+        OPENROUTER_API_KEY: ${{ inputs.openrouter_api_key }}
+      run: |
+        if [ -z "$OPENROUTER_API_KEY" ]; then
+          echo "::error::openrouter_api_key input is required"
+          exit 1
+        fi
+        STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+          -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+          https://openrouter.ai/api/v1/auth/key)
+        if [ "$STATUS" != "200" ]; then
+          echo "::error::OpenRouter API key is invalid (HTTP $STATUS)"
+          exit 1
+        fi
+
+    - name: Run evals
+      id: evals
+      shell: bash
+      env:
+        OPENROUTER_API_KEY: ${{ inputs.openrouter_api_key }}
+        DEEPEVAL_TELEMETRY_OPT_OUT: "YES"
+        SERVER_CONFIG: ${{ inputs.server_config }}
+        EVAL_CASES: ${{ inputs.eval_cases }}
+        EVAL_FILTER: ${{ inputs.filter }}
+        EVAL_MAX_STEPS: ${{ inputs.max_steps }}
+      run: |
+        set -o pipefail
+        ARGS=""
+        [ -n "$EVAL_FILTER" ] && ARGS="--filter $EVAL_FILTER"
+        python ${{ github.action_path }}/run_evals.py \
+          --server-config "$SERVER_CONFIG" \
+          --eval-cases "$EVAL_CASES" \
+          --max-steps "$EVAL_MAX_STEPS" \
+          $ARGS \
+          --output eval-results.json \
+          2>&1 | tee eval-log.txt
+        echo "results_json=eval-results.json" >> "$GITHUB_OUTPUT"
+        echo "passed=true" >> "$GITHUB_OUTPUT"
+
+    - name: Mark as failed if evals failed
+      if: failure()
+      id: mark_failed
+      shell: bash
+      run: echo "passed=false" >> "$GITHUB_OUTPUT"
+
+    - name: Generate report
+      id: report
+      if: always()
+      shell: bash
+      run: |
+        if [ -f eval-results.json ]; then
+          python ${{ github.action_path }}/format_report.py eval-results.json > eval-report.md
+        else
+          echo "# Eval Report" > eval-report.md
+          echo "" >> eval-report.md
+          echo "> **Evals failed to produce results.** Check the workflow logs." >> eval-report.md
+        fi
+        echo "report_md=eval-report.md" >> "$GITHUB_OUTPUT"

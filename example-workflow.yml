@@ -1,0 +1,64 @@
+# Example: how a repo would use the eval action
+name: MCP Server Evals
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      filter:
+        description: "Filter cases by id"
+        default: ""
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Install your MCP server's dependencies
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v5
+      - run: uv pip install --system -r requirements.txt
+
+      # Run evals
+      - uses: mcp-use/eval-action@v1
+        id: evals
+        with:
+          server_config: |
+            {
+              "command": "python",
+              "args": ["-m", "my_mcp_server", "--transport", "stdio"],
+              "env": {
+                "MONGO_PASSWORD": "${{ secrets.MONGO_PASSWORD }}",
+                "USE_FAKE_DB": "false"
+              }
+            }
+          eval_cases: "evals/eval_cases.yaml"
+          openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+          filter: ${{ inputs.filter }}
+
+      # Post results
+      - uses: marocchino/sticky-pull-request-comment@v2
+        if: always() && github.event_name == 'pull_request'
+        with:
+          header: mcp-evals
+          path: ${{ steps.evals.outputs.report_md }}
+
+      - run: cat ${{ steps.evals.outputs.report_md }} >> "$GITHUB_STEP_SUMMARY"
+        if: always()
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-results
+          path: |
+            ${{ steps.evals.outputs.results_json }}
+            ${{ steps.evals.outputs.report_md }}
+          retention-days: 30
