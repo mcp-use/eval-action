@@ -114,15 +114,18 @@ def generate_markdown(results: list[dict]) -> str:
         anchor = _anchor(r["case_id"], r.get("model", ""), r["prompt_name"])
 
         lines.append(
-            f'<details><summary id="{anchor}">'
+            f'<details>\n<summary id="{anchor}">'
             f'{icon} <code>{r["case_id"]}</code> · '
             f'<code>{r.get("model", "")}</code> · '
             f'{r["prompt_name"]} — {pct}</summary>\n'
         )
-        lines.append(f'**Query:** {r.get("input", "")}\n')
-        lines.append(f"**Judge:** {comment}\n")
+        lines.append(f"#### Query\n")
+        lines.append(f'> {r.get("input", "")}\n')
+        lines.append(f"#### Judge — {pct}\n")
+        lines.append(f"> {comment}\n")
         if output:
-            lines.append(f"**Response:**\n\n{output}\n")
+            lines.append(f"#### Agent Response\n")
+            lines.append(f"```\n{output}\n```\n")
         lines.append("</details>\n")
 
     return "\n".join(lines)

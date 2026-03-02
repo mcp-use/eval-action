@@ -22,6 +22,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -143,7 +144,8 @@ async def run_evals(
 ) -> list[dict]:
     config = load_eval_cases(eval_cases_path)
     cases = config["cases"]
-    prompts = config["system_prompts"]
+    today = datetime.now().strftime("%Y-%m-%d")
+    prompts = {k: v.replace("{today}", today) for k, v in config["system_prompts"].items()}
     models = get_models(config)
 
     if case_filter:
