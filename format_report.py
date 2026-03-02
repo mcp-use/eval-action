@@ -57,6 +57,11 @@ def _provider_img(logo_url: str) -> str:
     return f'<img src="{logo_url}" width="16" height="16">'
 
 
+def _anchor(case_id: str, model: str, prompt: str) -> str:
+    """Generate a unique anchor id for a result."""
+    return f"{case_id}-{model}-{prompt}".replace("/", "-").replace(" ", "-").lower()
+
+
 def generate_markdown(results: list[dict]) -> str:
     total = len(results)
     passed = sum(1 for r in results if r["success"])
@@ -80,21 +85,14 @@ def generate_markdown(results: list[dict]) -> str:
     summary_parts.append(datetime.now().strftime("%Y-%m-%d %H:%M"))
     lines.append(f"> {' · '.join(summary_parts)}\n")
 
-    # Table
-    lines.append("| Score | Case | Query | Provider | Model | Prompt | Time | Judge | Response |")
-    lines.append("|:-----:|:----:|:------|:--------:|:-----:|:------:|:----:|:------|:---------|")
+    # Table — compact, links to details below
+    lines.append("| Score | Case | Query | Provider | Model | Prompt | Time | Details |")
+    lines.append("|:-----:|:----:|:------|:--------:|:-----:|:------:|:----:|:-------:|")
 
     for r in results:
         judge = next((m for m in r["metrics"]), None)
         score_val = judge["score"] if judge and judge["score"] is not None else None
         badge = _score_badge(score_val)
-        comment = (judge.get("reason") or "") if judge else ""
-        comment = comment.replace("|", "\\|").replace("\n", " ")
-        comment = f"<details><summary>Show</summary>{comment}</details>" if comment else "-"
-
-        output = (r.get("actual_output") or "").replace("|", "\\|").replace("\n", "<br>")
-        response_cell = f"<details><summary>Show</summary>{output}</details>" if output else "-"
-
         query = (r.get("input") or "").replace("|", "\\|")
 
         _, model_name, logo_url = _parse_model(r.get("model", ""))
@@ -102,34 +100,37 @@ def generate_markdown(results: list[dict]) -> str:
         duration = r.get("duration_s", 0)
         time_str = f"{duration:.0f}s" if duration else "-"
 
+        anchor = _anchor(r["case_id"], r.get("model", ""), r["prompt_name"])
+        detail_link = f"[View](#{anchor})"
+
         lines.append(
             f"| {badge} | `{r['case_id']}` | {query} | {provider_cell} "
-            f"| `{model_name}` | {r['prompt_name']} | {time_str} | {comment} | {response_cell} |"
+            f"| `{model_name}` | {r['prompt_name']} | {time_str} | {detail_link} |"
         )
 
-    # Collapsed details per case
-    failures = [r for r in results if not r["success"]]
-    if failures:
-        lines.append("\n### Failed cases\n")
-        for r in failures:
-            judge = next((m for m in r["metrics"]), None)
-            score_val = judge["score"] if judge and judge["score"] is not None else None
-            pct = f"{round(score_val * 100)}%" if score_val is not None else "N/A"
-            comment = (judge.get("reason") or "No judge comment") if judge else "No judge comment"
+    # Full details below the table — all collapsed
+    lines.append("\n### Details\n")
+    for r in results:
+        judge = next((m for m in r["metrics"]), None)
+        score_val = judge["score"] if judge and judge["score"] is not None else None
+        pct = f"{round(score_val * 100)}%" if score_val is not None else "N/A"
+        icon = "✅" if r["success"] else "❌"
+        comment = (judge.get("reason") or "No judge comment") if judge else "No judge comment"
+        output = r.get("actual_output", "")
 
-            lines.append(
-                f"<details><summary><code>{r['case_id']}</code> · "
-                f"<code>{r.get('model', '')}</code> · "
-                f"{r['prompt_name']} — {pct}</summary>\n"
-            )
-            lines.append(f"**Prompt:** {r.get('input', '')}\n")
-            lines.append(f"**Judge:** {comment}\n")
+        anchor = _anchor(r["case_id"], r.get("model", ""), r["prompt_name"])
 
-            output = r.get("actual_output", "")
-            if output:
-                lines.append(f"**Response:**\n\n{output}\n")
-
-            lines.append("</details>\n")
+        lines.append(
+            f'<details><summary id="{anchor}">'
+            f"{icon} <code>{r['case_id']}</code> · "
+            f"<code>{r.get('model', '')}</code> · "
+            f"{r['prompt_name']} — {pct}</summary>\n"
+        )
+        lines.append(f"**Query:** {r.get('input', '')}\n")
+        lines.append(f"**Judge:** {comment}\n")
+        if output:
+            lines.append(f"**Response:**\n\n{output}\n")
+        lines.append("</details>\n")
 
     return "\n".join(lines)
 
