@@ -180,7 +180,7 @@ async def run_evals(
                 "prompt_name": meta.get("prompt_name", ""),
                 "success": tr.success,
                 "input": tr.input,
-                "actual_output": tr.actual_output[:500] if tr.actual_output else "",
+                "actual_output": tr.actual_output or "",
                 "metrics": metrics,
                 "duration_s": meta.get("duration_s", 0),
             })

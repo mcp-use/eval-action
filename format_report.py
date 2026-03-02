@@ -81,8 +81,8 @@ def generate_markdown(results: list[dict]) -> str:
     lines.append(f"> {' · '.join(summary_parts)}\n")
 
     # Table
-    lines.append("| Score | Case | Provider | Model | Prompt | Time | Judge |")
-    lines.append("|:-----:|:----:|:--------:|:-----:|:------:|:----:|:------|")
+    lines.append("| Score | Case | Query | Provider | Model | Prompt | Time | Judge | Response |")
+    lines.append("|:-----:|:----:|:------|:--------:|:-----:|:------:|:----:|:------|:---------|")
 
     for r in results:
         judge = next((m for m in r["metrics"]), None)
@@ -92,14 +92,19 @@ def generate_markdown(results: list[dict]) -> str:
         comment = comment.replace("|", "\\|").replace("\n", " ")
         comment = f"<details><summary>Show</summary>{comment}</details>" if comment else "-"
 
+        output = (r.get("actual_output") or "").replace("|", "\\|").replace("\n", "<br>")
+        response_cell = f"<details><summary>Show</summary>{output}</details>" if output else "-"
+
+        query = (r.get("input") or "").replace("|", "\\|")
+
         _, model_name, logo_url = _parse_model(r.get("model", ""))
         provider_cell = _provider_img(logo_url)
         duration = r.get("duration_s", 0)
         time_str = f"{duration:.0f}s" if duration else "-"
 
         lines.append(
-            f"| {badge} | `{r['case_id']}` | {provider_cell} "
-            f"| `{model_name}` | {r['prompt_name']} | {time_str} | {comment} |"
+            f"| {badge} | `{r['case_id']}` | {query} | {provider_cell} "
+            f"| `{model_name}` | {r['prompt_name']} | {time_str} | {comment} | {response_cell} |"
         )
 
     # Collapsed details per case
