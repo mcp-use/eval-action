@@ -107,16 +107,28 @@ def extract_tool_calls(agent: MCPAgent) -> list[dict]:
 
 
 def _extract_text_content(content) -> str:
-    """Extract plain text from a message's content (str or list of blocks)."""
+    """Extract plain text from a message's content (str or list of blocks).
+
+    Handles:
+      - Plain strings
+      - Lists of dicts with {"type": "text", "text": "..."}
+      - Lists of MCP TextContent objects (have .type and .text attributes)
+    """
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        parts = [
-            block.get("text", "") if isinstance(block, dict) else str(block)
-            for block in content
-            if not isinstance(block, dict) or block.get("type") == "text"
-        ]
+        parts = []
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type") == "text":
+                    parts.append(block.get("text", ""))
+            elif hasattr(block, "text"):
+                parts.append(block.text)
+            else:
+                parts.append(str(block))
         return "\n".join(p for p in parts if p)
+    if hasattr(content, "text"):
+        return content.text
     return str(content)
 
 
