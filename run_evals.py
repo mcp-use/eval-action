@@ -20,6 +20,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime
@@ -29,6 +30,7 @@ from typing import Any
 os.environ["DEEPEVAL_TELEMETRY_OPT_OUT"] = "YES"
 
 import yaml
+from langchain_core.messages import AIMessage
 from mcp_use import MCPAgent
 from mcp_use.client import MCPClient
 
@@ -39,16 +41,16 @@ from deepeval.models import OpenRouterModel
 from deepeval.test_case import LLMTestCase, LLMTestCaseParams
 
 
+# ── Config helpers ───────────────────────────────────────────────────────────
+
+
 def load_eval_cases(path: str) -> dict[str, Any]:
     with open(path) as f:
         return yaml.safe_load(f)
 
 
 def get_judge_model(config: dict) -> str:
-    env = os.getenv("EVAL_JUDGE_MODEL")
-    if env:
-        return env
-    return config.get("judge_model", "openai/gpt-4o-mini")
+    return os.getenv("EVAL_JUDGE_MODEL") or config.get("judge_model", "openai/gpt-4o-mini")
 
 
 def get_models(config: dict) -> list[str]:
@@ -75,17 +77,141 @@ def create_llm(model: str, temperature: float = 0):
     )
 
 
-def _parse_server_config(server_config_json: str) -> dict:
+def _parse_server_config(raw: str) -> dict:
     """Parse server config JSON with sensible defaults for MCP subprocess."""
-    config = json.loads(server_config_json)
-    if "env" not in config:
-        config["env"] = {}
-    config["env"].setdefault("MCP_USE_ANONYMIZED_TELEMETRY", "false")
-    config["env"].setdefault("MCP_USE_DEBUG", "0")
-    config["env"].setdefault("DEBUG", "0")
-    config["env"].setdefault("SHOW_INSPECTOR_LOGS", "false")
-    config["env"].setdefault("PRETTY_PRINT_JSONRPC", "false")
+    config = json.loads(raw)
+    defaults = {
+        "MCP_USE_ANONYMIZED_TELEMETRY": "false",
+        "MCP_USE_DEBUG": "0",
+        "DEBUG": "0",
+        "SHOW_INSPECTOR_LOGS": "false",
+        "PRETTY_PRINT_JSONRPC": "false",
+    }
+    env = config.setdefault("env", {})
+    for key, val in defaults.items():
+        env.setdefault(key, val)
     return config
+
+
+# ── Tool assertion engine ────────────────────────────────────────────────────
+
+
+def extract_tool_calls(agent: MCPAgent) -> list[dict]:
+    """Extract tool calls with args from the agent's conversation history."""
+    return [
+        {"name": tc.get("name", "unknown"), "args": tc.get("args", {})}
+        for msg in agent.get_conversation_history()
+        if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None)
+        for tc in msg.tool_calls
+    ]
+
+
+def _normalize_requirement(req: dict | str) -> tuple[str, dict]:
+    """Normalize a required_tools entry to (tool_name, expected_args)."""
+    if isinstance(req, str):
+        return req, {}
+    return req["name"], req.get("args", {})
+
+
+def _match_arg_value(actual: Any, expected: Any) -> bool:
+    """Match an argument value against an expected value.
+
+    Supported forms:
+      - "any"                          → key exists (any value)
+      - {"contains": "text"}           → case-insensitive substring
+      - {"pattern": "regex"}           → regex match
+      - plain string                   → exact match (case-insensitive)
+      - anything else                  → equality check
+    """
+    match expected:
+        case {"contains": substr}:
+            return substr.lower() in str(actual).lower()
+        case {"pattern": pat}:
+            return bool(re.search(pat, str(actual), re.IGNORECASE))
+        case "any":
+            return True
+        case str() as s:
+            return str(actual).lower() == s.lower()
+        case _:
+            return actual == expected
+
+
+def _call_matches_args(call: dict, expected_args: dict) -> bool:
+    """Return True if a single tool call satisfies all expected arg constraints."""
+    return all(
+        key in call["args"] and _match_arg_value(call["args"][key], expected_val)
+        for key, expected_val in expected_args.items()
+    )
+
+
+def check_tool_assertions(
+    tool_calls: list[dict],
+    required_tools: list[dict | str],
+) -> dict:
+    """Check required tool assertions against actual tool calls.
+
+    Returns:
+        {"passed": bool, "checks": [{"tool", "passed", "reason", ...}, ...]}
+    """
+    if not required_tools:
+        return {"passed": True, "checks": []}
+
+    checks = []
+    for req in required_tools:
+        tool_name, expected_args = _normalize_requirement(req)
+        matching_calls = [tc for tc in tool_calls if tc["name"] == tool_name]
+        check = _evaluate_single_tool(tool_name, expected_args, matching_calls)
+        checks.append(check)
+
+    return {
+        "passed": all(c["passed"] for c in checks),
+        "checks": checks,
+    }
+
+
+def _evaluate_single_tool(
+    tool_name: str,
+    expected_args: dict,
+    matching_calls: list[dict],
+) -> dict:
+    """Evaluate whether a single tool requirement is satisfied."""
+    if not matching_calls:
+        return {
+            "tool": tool_name,
+            "passed": False,
+            "reason": "not called",
+            "expected_args": expected_args or None,
+        }
+
+    if not expected_args:
+        return {
+            "tool": tool_name,
+            "passed": True,
+            "reason": f"called {len(matching_calls)}x",
+            "expected_args": None,
+        }
+
+    if any(_call_matches_args(call, expected_args) for call in matching_calls):
+        return {
+            "tool": tool_name,
+            "passed": True,
+            "reason": "called with matching args",
+            "expected_args": expected_args,
+        }
+
+    return {
+        "tool": tool_name,
+        "passed": False,
+        "reason": "called but args did not match",
+        "expected_args": expected_args,
+        "actual_args": [
+            {k: v for k, v in c["args"].items() if k in expected_args}
+            for c in matching_calls
+        ],
+    }
+
+
+# ── Eval execution ───────────────────────────────────────────────────────────
 
 
 async def _run_single_eval(
@@ -105,14 +231,18 @@ async def _run_single_eval(
     client = MCPClient({"mcpServers": {"target": server_config}})
     await client.create_session("target")
 
+    tool_calls: list[dict] = []
     t0 = time.monotonic()
     try:
         agent = MCPAgent(
-            llm=create_llm(model_name), client=client,
-            max_steps=max_steps, system_prompt=system_prompt,
-            memory_enabled=False,
+            llm=create_llm(model_name),
+            client=client,
+            max_steps=max_steps,
+            system_prompt=system_prompt,
+            memory_enabled=True,
         )
         response = await agent.run(case["prompt"]) or ""
+        tool_calls = extract_tool_calls(agent)
     except Exception as e:
         print(f"  [{case_id}] ERROR: {e}", file=sys.stderr)
         response = f"[Agent error: {e}]"
@@ -122,6 +252,10 @@ async def _run_single_eval(
     elapsed = time.monotonic() - t0
     print(f"  [{case_id}] {elapsed:.1f}s", file=sys.stderr)
 
+    tool_assertion_result = check_tool_assertions(
+        tool_calls, case.get("required_tools", []),
+    )
+
     tc = LLMTestCase(
         input=case["prompt"],
         actual_output=response,
@@ -130,9 +264,37 @@ async def _run_single_eval(
             "model": model_name,
             "prompt_name": prompt_name,
             "duration_s": round(elapsed, 1),
+            "tool_calls": tool_calls,
+            "tool_assertions": tool_assertion_result,
         },
     )
     return tc, case
+
+
+def _build_result(tr, meta: dict) -> dict:
+    """Build a single result dict from a DeepEval test result."""
+    metrics = [
+        {"name": md.name, "score": md.score, "reason": md.reason, "success": md.success}
+        for md in (tr.metrics_data or [])
+    ]
+    tool_assertions = meta.get("tool_assertions", {"passed": True, "checks": []})
+    rubric_passed = tr.success
+    tools_passed = tool_assertions.get("passed", True)
+
+    return {
+        "case_id": meta.get("case_id", ""),
+        "model": meta.get("model", ""),
+        "prompt_name": meta.get("prompt_name", ""),
+        "success": rubric_passed and tools_passed,
+        "rubric_passed": rubric_passed,
+        "tools_passed": tools_passed,
+        "input": tr.input,
+        "actual_output": tr.actual_output or "",
+        "metrics": metrics,
+        "tool_calls": meta.get("tool_calls", []),
+        "tool_assertions": tool_assertions,
+        "duration_s": meta.get("duration_s", 0),
+    }
 
 
 async def run_evals(
@@ -153,10 +315,10 @@ async def run_evals(
 
     server_config = _parse_server_config(server_config_json)
 
-    # Build list of all eval coroutines
+    # Build all eval coroutines
     coros = []
-    n = 0
     total = len(cases) * len(models) * len(prompts)
+    n = 0
     for case in cases:
         for model_name in models:
             for prompt_name, system_prompt in prompts.items():
@@ -165,12 +327,12 @@ async def run_evals(
                     server_config, case, model_name, prompt_name,
                     system_prompt, max_steps, n, total,
                 ))
+    mode = "parallel" if parallel else "sequentially"
+    print(f"Running {total} evals {mode}...\n", file=sys.stderr)
 
     if parallel:
-        print(f"Running {total} evals in parallel...\n", file=sys.stderr)
         results_pairs = await asyncio.gather(*coros)
     else:
-        print(f"Running {total} evals sequentially...\n", file=sys.stderr)
         results_pairs = [await c for c in coros]
 
     # Score each with GEval
@@ -187,27 +349,17 @@ async def run_evals(
             model=judge,
         )
         result = evaluate(
-            test_cases=[tc], metrics=[metric],
+            test_cases=[tc],
+            metrics=[metric],
             display_config=DisplayConfig(print_results=True, verbose_mode=False),
         )
         for tr in result.test_results:
-            meta = tr.additional_metadata or {}
-            metrics = [
-                {"name": md.name, "score": md.score, "reason": md.reason, "success": md.success}
-                for md in (tr.metrics_data or [])
-            ]
-            all_results.append({
-                "case_id": meta.get("case_id", ""),
-                "model": meta.get("model", ""),
-                "prompt_name": meta.get("prompt_name", ""),
-                "success": tr.success,
-                "input": tr.input,
-                "actual_output": tr.actual_output or "",
-                "metrics": metrics,
-                "duration_s": meta.get("duration_s", 0),
-            })
+            all_results.append(_build_result(tr, tr.additional_metadata or {}))
 
     return all_results
+
+
+# ── CLI ──────────────────────────────────────────────────────────────────────
 
 
 def main():
