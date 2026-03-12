@@ -109,6 +109,82 @@ def _format_tool_assertions_section(tool_assertions: dict) -> list[str]:
     return lines
 
 
+def _html_escape(text: str) -> str:
+    """Escape HTML special characters."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+# ── Conversation formatting ──────────────────────────────────────────────────
+
+# Inline styles for chat bubbles (GitHub markdown strips <style> blocks)
+_BUBBLE_BASE = (
+    "padding:8px 12px;border-radius:8px;margin:4px 0;"
+    "font-size:13px;line-height:1.4;overflow-x:auto"
+)
+_STYLES = {
+    "user": f'{_BUBBLE_BASE};background:#dbeafe;border:1px solid #93c5fd',
+    "assistant": f'{_BUBBLE_BASE};background:#f3f4f6;border:1px solid #d1d5db',
+    "tool_call": f'{_BUBBLE_BASE};background:#fef3c7;border:1px solid #fcd34d;font-family:monospace',
+    "tool_result": f'{_BUBBLE_BASE};background:#fefce8;border:1px solid #fde68a;font-family:monospace',
+}
+_LABELS = {
+    "user": "🧑 User",
+    "assistant": "🤖 Assistant",
+    "tool_call": "🔧 Tool Call",
+    "tool_result": "📎 Tool Result",
+}
+
+
+def _format_tool_call_text(tc: dict) -> str:
+    """Format a single tool call as a readable string."""
+    name = tc.get("name", "unknown")
+    args = tc.get("args", {})
+    if not args:
+        return f"{name}()"
+    pairs = ", ".join(f'{k}={json.dumps(v, default=str)}' for k, v in args.items())
+    return f"{name}({pairs})"
+
+
+def _chat_bubble(style_key: str, content: str) -> str:
+    """Render a single chat bubble as an HTML div."""
+    label = _LABELS[style_key]
+    style = _STYLES[style_key]
+    escaped = _html_escape(content)
+    return f'<div style="{style}"><strong>{label}</strong><br><pre style="margin:4px 0 0;white-space:pre-wrap;word-break:break-word">{escaped}</pre></div>'
+
+
+def _format_conversation_section(conversation: list[dict]) -> list[str]:
+    """Render the full conversation as a collapsible HTML chat."""
+    if not conversation:
+        return []
+
+    lines = ['<details>\n<summary>💬 Full Conversation</summary>\n']
+
+    for msg in conversation:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+
+        match role:
+            case "system":
+                continue
+            case "user":
+                lines.append(_chat_bubble("user", content))
+            case "assistant":
+                tool_calls = msg.get("tool_calls", [])
+                if content:
+                    lines.append(_chat_bubble("assistant", content))
+                for tc in tool_calls:
+                    lines.append(_chat_bubble("tool_call", _format_tool_call_text(tc)))
+            case "tool":
+                tool_name = msg.get("tool_name", "unknown")
+                header = f"← {tool_name}"
+                body = content if len(content) <= 500 else content[:500] + "\n... (truncated)"
+                lines.append(_chat_bubble("tool_result", f"{header}\n{body}"))
+
+    lines.append('\n</details>\n')
+    return lines
+
+
 def _format_tools_cell(tool_assertions: dict) -> str:
     """Format the Tools column cell for the summary table."""
     checks = tool_assertions.get("checks", [])
@@ -205,11 +281,7 @@ def _generate_details(results: list[dict]) -> list[str]:
         lines.append(f"> {comment}\n")
 
         lines.extend(_format_tool_assertions_section(r.get("tool_assertions", {})))
-
-        output = r.get("actual_output", "")
-        if output:
-            lines.append("#### Agent Response\n")
-            lines.append(f"```\n{output}\n```\n")
+        lines.extend(_format_conversation_section(r.get("conversation", [])))
 
         lines.append("</details>\n")
 

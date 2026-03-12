@@ -30,7 +30,7 @@ from typing import Any
 os.environ["DEEPEVAL_TELEMETRY_OPT_OUT"] = "YES"
 
 import yaml
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from mcp_use import MCPAgent
 from mcp_use.client import MCPClient
 
@@ -104,6 +104,57 @@ def extract_tool_calls(agent: MCPAgent) -> list[dict]:
         if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None)
         for tc in msg.tool_calls
     ]
+
+
+def _extract_text_content(content) -> str:
+    """Extract plain text from a message's content (str or list of blocks)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [
+            block.get("text", "") if isinstance(block, dict) else str(block)
+            for block in content
+            if not isinstance(block, dict) or block.get("type") == "text"
+        ]
+        return "\n".join(p for p in parts if p)
+    return str(content)
+
+
+def extract_conversation(agent: MCPAgent) -> list[dict]:
+    """Extract the full conversation as a serializable list of messages.
+
+    Each message is a dict with:
+      - role: "user" | "assistant" | "tool" | "system"
+      - content: text content (may be empty for assistant messages with only tool calls)
+      - tool_calls: list of {name, args} (only for assistant messages)
+      - tool_name: name of the tool (only for tool result messages)
+    """
+    messages = []
+    for msg in agent.get_conversation_history():
+        match msg:
+            case SystemMessage():
+                messages.append({"role": "system", "content": _extract_text_content(msg.content)})
+            case HumanMessage():
+                messages.append({"role": "user", "content": _extract_text_content(msg.content)})
+            case AIMessage():
+                entry: dict = {"role": "assistant", "content": _extract_text_content(msg.content)}
+                if getattr(msg, "tool_calls", None):
+                    entry["tool_calls"] = [
+                        {"name": tc.get("name", "unknown"), "args": tc.get("args", {})}
+                        for tc in msg.tool_calls
+                    ]
+                messages.append(entry)
+            case ToolMessage():
+                content = _extract_text_content(msg.content)
+                # Truncate large tool results for the report
+                if len(content) > 2000:
+                    content = content[:2000] + "\n... (truncated)"
+                messages.append({
+                    "role": "tool",
+                    "tool_name": getattr(msg, "name", None) or "unknown",
+                    "content": content,
+                })
+    return messages
 
 
 def _normalize_requirement(req: dict | str) -> tuple[str, dict]:
@@ -232,6 +283,7 @@ async def _run_single_eval(
     await client.create_session("target")
 
     tool_calls: list[dict] = []
+    conversation: list[dict] = []
     t0 = time.monotonic()
     try:
         agent = MCPAgent(
@@ -243,6 +295,7 @@ async def _run_single_eval(
         )
         response = await agent.run(case["prompt"]) or ""
         tool_calls = extract_tool_calls(agent)
+        conversation = extract_conversation(agent)
     except Exception as e:
         print(f"  [{case_id}] ERROR: {e}", file=sys.stderr)
         response = f"[Agent error: {e}]"
@@ -266,6 +319,7 @@ async def _run_single_eval(
             "duration_s": round(elapsed, 1),
             "tool_calls": tool_calls,
             "tool_assertions": tool_assertion_result,
+            "conversation": conversation,
         },
     )
     return tc, case
@@ -293,6 +347,7 @@ def _build_result(tr, meta: dict) -> dict:
         "metrics": metrics,
         "tool_calls": meta.get("tool_calls", []),
         "tool_assertions": tool_assertions,
+        "conversation": meta.get("conversation", []),
         "duration_s": meta.get("duration_s", 0),
     }
 
