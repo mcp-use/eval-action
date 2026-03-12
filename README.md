@@ -36,11 +36,11 @@ system_prompts:
   neutral: "You are a helpful assistant."
 
 cases:
-  - id: basic_search
-    prompt: "Find recent news about Tesla"
+  - id: basic_query
+    prompt: "What are the top items in the database?"
     rubric: |
-      The response should contain news articles about Tesla.
-      Each article should mention the source and publication date.
+      The response should list items from the database.
+      Each item should include a name and relevant details.
     threshold: 0.7
 ```
 
@@ -149,10 +149,10 @@ cases:
       The response should contain relevant information.
       The response should be well-structured.
     required_tools:            # (Optional) Tools the agent must call
-      - resolve_company
-      - name: search
+      - lookup_item
+      - name: search_records
         args:
-          language: "it"
+          category: "electronics"
     threshold: 0.7             # Minimum GEval score to pass (0.0 – 1.0)
 ```
 
@@ -164,9 +164,9 @@ The rubric is a plain-text description of what a good response looks like. The L
 
 ```yaml
 rubric: |
-  The response should list companies ranked by mention count.
-  Each entry should include the company name and number of mentions.
-  The data should come from the German news collection.
+  The response should list items ranked by relevance.
+  Each entry should include a name and a brief description.
+  The response should not include internal database IDs.
 ```
 
 The judge does **not** see tool calls — only the final response. For verifying tool usage, use `required_tools` (see below).
@@ -181,32 +181,32 @@ A case passes only if **both** the rubric score meets the threshold **and** all 
 
 ```yaml
 required_tools:
-  - resolve_topic
-  - search
+  - resolve_category
+  - search_records
 ```
 
 #### With argument matching
 
 ```yaml
 required_tools:
-  - name: resolve_company
+  - name: lookup_item
     args:
-      name_or_id: { contains: "vuitton" }  # case-insensitive substring
-  - name: search
+      query: { contains: "widget" }   # case-insensitive substring
+  - name: search_records
     args:
-      language: "it"                        # exact match (case-insensitive)
+      region: "us-east"               # exact match (case-insensitive)
 ```
 
-If the tool was called multiple times (e.g., `search` with `language: "it"` and then with `language: "de"`), the assertion passes as long as **at least one call** matches the expected arguments.
+If the tool was called multiple times (e.g., `search_records` with `region: "us-east"` and then with `region: "eu-west"`), the assertion passes as long as **at least one call** matches the expected arguments.
 
 #### Argument matching modes
 
 | Form | Example | Behavior |
 |------|---------|----------|
-| Plain string | `language: "it"` | Exact match, case-insensitive |
-| `contains` | `name_or_id: { contains: "vuitton" }` | Case-insensitive substring match |
-| `pattern` | `name_or_id: { pattern: "louis.*vuitton" }` | Regex match, case-insensitive |
-| `any` | `name_or_id: "any"` | Passes if the argument key exists (any value) |
+| Plain string | `region: "us-east"` | Exact match, case-insensitive |
+| `contains` | `query: { contains: "widget" }` | Case-insensitive substring match |
+| `pattern` | `query: { pattern: "widget.*pro" }` | Regex match, case-insensitive |
+| `any` | `query: "any"` | Passes if the argument key exists (any value) |
 
 #### Combining simple and detailed forms
 
@@ -214,16 +214,16 @@ You can mix both forms in the same list:
 
 ```yaml
 required_tools:
-  - resolve_topic                        # just check it was called
-  - name: resolve_company
+  - resolve_category                     # just check it was called
+  - name: lookup_item
     args:
-      name_or_id: { contains: "lvmh" }  # check name + args
-  - name: search
+      query: { contains: "widget" }      # check name + args
+  - name: search_records
     args:
-      language: "it"
-  - name: search
+      region: "us-east"
+  - name: search_records
     args:
-      language: "de"
+      region: "eu-west"
 ```
 
 ## Action inputs
@@ -323,54 +323,54 @@ system_prompts:
 
 cases:
   # Simple case — rubric only, no tool assertions
-  - id: general_question
-    prompt: "What companies are trending in the news?"
+  - id: list_popular
+    prompt: "What are the most popular items right now?"
     rubric: |
-      The response should list companies with mention counts.
+      The response should list items with counts or rankings.
       The data should be current.
     threshold: 0.7
 
   # Case with tool assertions — simple form
-  - id: topic_search
-    prompt: "Have there been any acquisitions recently?"
+  - id: category_search
+    prompt: "Show me everything in the electronics category."
     rubric: |
-      The response should summarize recent acquisition events.
-      It should mention the companies involved and dates.
+      The response should list items from the electronics category.
+      Each item should include a name and price.
     required_tools:
-      - resolve_topic
-      - search
+      - resolve_category
+      - search_records
     threshold: 0.7
 
   # Case with tool assertions — argument matching
-  - id: company_lookup
-    prompt: "Find news about LVMH in Italy from the past 6 months."
+  - id: specific_lookup
+    prompt: "Find details about the Widget Pro in the US store."
     rubric: |
-      The response should be a narrative summary of LVMH news.
-      It should mention sources and time frames.
+      The response should contain detailed product information.
+      It should mention availability and pricing.
     required_tools:
-      - name: resolve_company
+      - name: lookup_item
         args:
-          name_or_id: { contains: "lvmh" }
-      - name: search
+          query: { contains: "widget" }
+      - name: search_records
         args:
-          language: "it"
+          region: "us-east"
     threshold: 0.7
 
   # Case with multiple tool calls of the same type
-  - id: cross_language_search
-    prompt: "Compare coverage of Tesla in Italy and Germany."
+  - id: cross_region_compare
+    prompt: "Compare Widget Pro availability in the US and EU."
     rubric: |
-      The response should compare coverage across both countries.
+      The response should compare availability across both regions.
     required_tools:
-      - name: resolve_company
+      - name: lookup_item
         args:
-          name_or_id: { contains: "tesla" }
-      - name: search
+          query: { contains: "widget" }
+      - name: search_records
         args:
-          language: "it"
-      - name: search
+          region: "us-east"
+      - name: search_records
         args:
-          language: "de"
+          region: "eu-west"
     threshold: 0.7
 ```
 
@@ -395,7 +395,7 @@ python run_evals.py \
 python run_evals.py \
   --server-config '{"command": "python", "args": ["-m", "my_server", "--transport", "stdio"]}' \
   --eval-cases eval_cases.yaml \
-  --filter company_lookup \
+  --filter specific_lookup \
   --output results.json
 
 # Generate markdown report
@@ -421,31 +421,31 @@ Each entry in `eval-results.json`:
 
 ```json
 {
-  "case_id": "company_lookup",
+  "case_id": "specific_lookup",
   "model": "anthropic/claude-sonnet-4",
   "prompt_name": "neutral",
   "success": true,
   "rubric_passed": true,
   "tools_passed": true,
-  "input": "Find news about LVMH...",
-  "actual_output": "Here is a summary of LVMH news...",
+  "input": "Find details about the Widget Pro in the US store.",
+  "actual_output": "Here are the details for Widget Pro...",
   "metrics": [
     {
       "name": "Response Quality",
       "score": 0.85,
-      "reason": "The response covers key themes...",
+      "reason": "The response covers all requested details...",
       "success": true
     }
   ],
   "tool_calls": [
-    { "name": "resolve_company", "args": { "name_or_id": "LVMH", "language": "it" } },
-    { "name": "search", "args": { "language": "it", "company": "LVMH SPA" } }
+    { "name": "lookup_item", "args": { "query": "Widget Pro" } },
+    { "name": "search_records", "args": { "region": "us-east", "item": "Widget Pro" } }
   ],
   "tool_assertions": {
     "passed": true,
     "checks": [
-      { "tool": "resolve_company", "passed": true, "reason": "called with matching args", "expected_args": { "name_or_id": { "contains": "lvmh" } } },
-      { "tool": "search", "passed": true, "reason": "called with matching args", "expected_args": { "language": "it" } }
+      { "tool": "lookup_item", "passed": true, "reason": "called with matching args", "expected_args": { "query": { "contains": "widget" } } },
+      { "tool": "search_records", "passed": true, "reason": "called with matching args", "expected_args": { "region": "us-east" } }
     ]
   },
   "duration_s": 12.3,
