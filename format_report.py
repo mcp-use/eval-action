@@ -19,6 +19,9 @@ PROVIDER_LOGOS = {
     "google": "https://cdn.mcp-use.com/google.svg",
 }
 
+_PASS_BADGE = '<img src="https://img.shields.io/badge/%E2%9C%93-2da44e?style=flat-square" alt="pass" height="14">'
+_FAIL_BADGE = '<img src="https://img.shields.io/badge/%E2%9C%97-d1242f?style=flat-square" alt="fail" height="14">'
+
 
 # ── Formatting helpers ───────────────────────────────────────────────────────
 
@@ -42,6 +45,10 @@ def _score_badge(score: float | None) -> str:
         ("d1242f", "failing")
     )
     return f'<img src="https://img.shields.io/badge/{pct}%25-{label}-{color}" alt="{pct}%">'
+
+
+def _pass_fail_badge(passed: bool) -> str:
+    return _PASS_BADGE if passed else _FAIL_BADGE
 
 
 def _provider_img(logo_url: str) -> str:
@@ -78,8 +85,8 @@ def _format_expected_val(val: object) -> str:
 
 def _format_tool_check(check: dict) -> str:
     """Format a single tool assertion check as a markdown list item."""
-    icon = "✅" if check["passed"] else "❌"
-    parts = [f"- {icon} `{check['tool']}` — {check.get('reason', '')}"]
+    badge = _pass_fail_badge(check["passed"])
+    parts = [f"- {badge} `{check['tool']}` — {check.get('reason', '')}"]
 
     expected = check.get("expected_args")
     if expected:
@@ -102,86 +109,10 @@ def _format_tool_assertions_section(tool_assertions: dict) -> list[str]:
     if not checks:
         return []
 
-    status = "✅ Passed" if tool_assertions.get("passed") else "❌ Failed"
-    lines = [f"#### Tool Assertions — {status}\n"]
+    badge = _pass_fail_badge(tool_assertions.get("passed", True))
+    lines = [f"##### Tool Assertions {badge}\n"]
     lines.extend(_format_tool_check(c) for c in checks)
     lines.append("")
-    return lines
-
-
-def _html_escape(text: str) -> str:
-    """Escape HTML special characters."""
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-
-# ── Conversation formatting ──────────────────────────────────────────────────
-
-# Inline styles for chat bubbles (GitHub markdown strips <style> blocks)
-_BUBBLE_BASE = (
-    "padding:8px 12px;border-radius:8px;margin:4px 0;"
-    "font-size:13px;line-height:1.4;overflow-x:auto"
-)
-_STYLES = {
-    "user": f'{_BUBBLE_BASE};background:#dbeafe;border:1px solid #93c5fd',
-    "assistant": f'{_BUBBLE_BASE};background:#f3f4f6;border:1px solid #d1d5db',
-    "tool_call": f'{_BUBBLE_BASE};background:#fef3c7;border:1px solid #fcd34d;font-family:monospace',
-    "tool_result": f'{_BUBBLE_BASE};background:#fefce8;border:1px solid #fde68a;font-family:monospace',
-}
-_LABELS = {
-    "user": "🧑 User",
-    "assistant": "🤖 Assistant",
-    "tool_call": "🔧 Tool Call",
-    "tool_result": "📎 Tool Result",
-}
-
-
-def _format_tool_call_text(tc: dict) -> str:
-    """Format a single tool call as a readable string."""
-    name = tc.get("name", "unknown")
-    args = tc.get("args", {})
-    if not args:
-        return f"{name}()"
-    pairs = ", ".join(f'{k}={json.dumps(v, default=str)}' for k, v in args.items())
-    return f"{name}({pairs})"
-
-
-def _chat_bubble(style_key: str, content: str) -> str:
-    """Render a single chat bubble as an HTML div."""
-    label = _LABELS[style_key]
-    style = _STYLES[style_key]
-    escaped = _html_escape(content)
-    return f'<div style="{style}"><strong>{label}</strong><br><pre style="margin:4px 0 0;white-space:pre-wrap;word-break:break-word">{escaped}</pre></div>'
-
-
-def _format_conversation_section(conversation: list[dict]) -> list[str]:
-    """Render the full conversation as a collapsible HTML chat."""
-    if not conversation:
-        return []
-
-    lines = ['<details>\n<summary>💬 Full Conversation</summary>\n']
-
-    for msg in conversation:
-        role = msg.get("role", "")
-        content = msg.get("content", "")
-
-        match role:
-            case "system":
-                continue
-            case "user":
-                lines.append(_chat_bubble("user", content))
-            case "assistant":
-                tool_calls = msg.get("tool_calls", [])
-                if content:
-                    lines.append(_chat_bubble("assistant", content))
-                for tc in tool_calls:
-                    lines.append(_chat_bubble("tool_call", _format_tool_call_text(tc)))
-            case "tool":
-                tool_name = msg.get("tool_name", "unknown")
-                header = f"← {tool_name}"
-                body = content if len(content) <= 500 else content[:500] + "\n... (truncated)"
-                lines.append(_chat_bubble("tool_result", f"{header}\n{body}"))
-
-    lines.append('\n</details>\n')
     return lines
 
 
@@ -190,9 +121,87 @@ def _format_tools_cell(tool_assertions: dict) -> str:
     checks = tool_assertions.get("checks", [])
     if not checks:
         return "—"
-    icon = "✅" if tool_assertions.get("passed") else "❌"
+    badge = _pass_fail_badge(tool_assertions.get("passed", True))
     passed_count = sum(1 for c in checks if c["passed"])
-    return f"{icon} {passed_count}/{len(checks)}"
+    return f"{badge} {passed_count}/{len(checks)}"
+
+
+# ── Conversation formatting ──────────────────────────────────────────────────
+
+
+def _format_tool_call_block(tc: dict) -> list[str]:
+    """Format a single tool call as a collapsible details block with Input/Output."""
+    name = tc.get("name", "unknown")
+    args = tc.get("args", {})
+    args_json = json.dumps(args, indent=2, default=str)
+
+    return [
+        "<details>",
+        f"<summary><strong>Tool Call</strong> &nbsp; <code>{name}</code></summary>\n",
+        "**Input**",
+        f"```json\n{args_json}\n```\n",
+        "</details>",
+        "<br>\n",
+    ]
+
+
+def _format_tool_result_block(msg: dict) -> list[str]:
+    """Append tool result Output into the preceding tool call block."""
+    content = msg.get("content", "")
+    # Try to parse and re-format as JSON, fall back to raw text
+    try:
+        parsed = json.loads(content)
+        body = json.dumps(parsed, indent=2, default=str)
+    except (json.JSONDecodeError, TypeError):
+        body = content
+    # Truncate large results
+    if len(body) > 2000:
+        body = body[:2000] + "\n... (truncated)"
+    return [f"```json\n{body}\n```\n"]
+
+
+def _format_conversation_section(conversation: list[dict]) -> list[str]:
+    """Render the full conversation as a collapsible markdown chat."""
+    if not conversation:
+        return []
+
+    lines = ["<details>", "<summary>Conversation</summary>", "<br>\n"]
+
+    i = 0
+    while i < len(conversation):
+        msg = conversation[i]
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+
+        match role:
+            case "system":
+                pass
+            case "user":
+                lines.append(f"> {content}\n")
+            case "assistant":
+                if content:
+                    lines.append(f"{content}\n")
+                for tc in msg.get("tool_calls", []):
+                    # Build tool call block, peek ahead for matching tool result
+                    tc_lines = _format_tool_call_block(tc)
+                    # Check if next message is the tool result
+                    if i + 1 < len(conversation) and conversation[i + 1].get("role") == "tool":
+                        # Insert Output before the closing </details>
+                        result_lines = _format_tool_result_block(conversation[i + 1])
+                        # Insert Output before </details> and <br>
+                        tc_lines = tc_lines[:-2] + ["**Output**"] + result_lines + tc_lines[-2:]
+                        i += 1  # skip the tool result message
+                    lines.extend(tc_lines)
+            case "tool":
+                # Standalone tool result (not paired with a call above)
+                tool_name = msg.get("tool_name", "unknown")
+                lines.append(f"**{tool_name}** result:\n")
+                lines.extend(_format_tool_result_block(msg))
+
+        i += 1
+
+    lines.append("</details>\n")
+    return lines
 
 
 # ── Report generation ────────────────────────────────────────────────────────
@@ -265,19 +274,19 @@ def _generate_details(results: list[dict]) -> list[str]:
         judge = _get_judge(r)
         score_val = judge["score"] if judge and judge["score"] is not None else None
         pct = _pct_str(score_val)
-        icon = "✅" if r["success"] else "❌"
+        badge = _pass_fail_badge(r["success"])
         comment = (judge.get("reason") or "No judge comment") if judge else "No judge comment"
         anchor = _anchor(r["case_id"], r.get("model", ""), r["prompt_name"])
 
         lines.append(
             f'<details>\n<summary id="{anchor}">'
-            f'{icon} <code>{r["case_id"]}</code> · '
+            f'{badge} <code>{r["case_id"]}</code> · '
             f'<code>{r.get("model", "")}</code> · '
             f'{r["prompt_name"]} — {pct}</summary>\n'
         )
-        lines.append(f"#### Query\n")
+        lines.append(f"##### Query\n")
         lines.append(f'> {r.get("input", "")}\n')
-        lines.append(f"#### Judge — {pct}\n")
+        lines.append(f"##### Judge — {pct}\n")
         lines.append(f"> {comment}\n")
 
         lines.extend(_format_tool_assertions_section(r.get("tool_assertions", {})))
