@@ -415,6 +415,18 @@ python run_evals.py \
   --no-parallel            # Run sequentially
 ```
 
+### Testing the action wiring
+
+With Bash and PyYAML installed, run:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+These tests execute the action's evaluation step with a stand-in runner to check
+argument forwarding and exit status handling. No MCP server, model, or API key is
+required.
+
 ## Results JSON schema
 
 Each entry in `eval-results.json`:

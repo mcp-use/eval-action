@@ -89,6 +89,7 @@ runs:
         ARGS=""
         [ -n "$EVAL_FILTER" ] && ARGS="--filter $EVAL_FILTER"
         [ "$EVAL_PARALLEL" = "true" ] && ARGS="$ARGS --parallel"
+        [ "$EVAL_PARALLEL" = "false" ] && ARGS="$ARGS --no-parallel"
         python ${{ github.action_path }}/run_evals.py \
           --server-config "$SERVER_CONFIG" \
           --eval-cases "$EVAL_CASES" \
